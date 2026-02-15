@@ -82,3 +82,16 @@ main()
 - 训练/评估均包含 tqdm 进度条
 - 包含样本展示、训练曲线、混淆矩阵、随机预测 demo
 - 兼容云端 Jupyter/Colab 运行方式
+
+
+### Notebook v2（推荐你本次直接下载）
+
+新增：`ViT_D2NN_CIFAR10_Compare_v2.ipynb`
+
+这版按你要求严格靠近 `D2NN-single-layer-CIFAR10(FO).ipynb`：
+
+- 保留 `class DNN` 风格
+- 核心训练思想保持：先锁参数训练相位，再解锁层间距微调
+- detector 仅替换为 **共享 FC head**，层数改为 **12层**
+- 修复中文显示（matplotlib 字体设置）
+- 修复结果绘图使用旧变量的问题（显式使用本次 `d2nn_hist`）
