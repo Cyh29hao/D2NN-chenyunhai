@@ -177,7 +177,16 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--output", type=Path, default=Path("results/cifar10_vit_vs_d2nn.json"))
-    args = parser.parse_args()
+    # In notebook environments (ipykernel), extra args like
+    # "-f /path/to/kernel.json" are injected into sys.argv.
+    # parse_known_args keeps CLI behavior while safely ignoring them.
+    args, unknown = parser.parse_known_args()
+    if unknown:
+        print(f"[info] Ignoring unrecognized args: {unknown}")
+
+    if args.device.startswith("cuda") and not torch.cuda.is_available():
+        print("[warning] CUDA requested but not available. Falling back to CPU.")
+        args.device = "cpu"
 
     set_seed(args.seed)
     device = torch.device(args.device)

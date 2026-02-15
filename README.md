@@ -61,3 +61,12 @@ python scripts/compare_vit_d2nn_cifar10.py \
 ```
 
 结果会写入：`results/cifar10_vit_vs_d2nn.json`。
+
+如果在 Jupyter/云笔记本里运行（会自动注入 `-f xxx.json` 参数），请这样调用：
+
+```python
+from scripts.compare_vit_d2nn_cifar10 import main
+main()
+```
+
+脚本已兼容 notebook 的额外参数，并且当指定 CUDA 但环境不可用时会自动回落到 CPU。
