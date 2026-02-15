@@ -95,3 +95,13 @@ main()
 - detector 仅替换为 **共享 FC head**，层数改为 **12层**
 - 修复中文显示（matplotlib 字体设置）
 - 修复结果绘图使用旧变量的问题（显式使用本次 `d2nn_hist`）
+
+
+### Notebook v3（尽量贴近原single-layer结构）
+
+新增：`ViT_D2NN_CIFAR10_Compare_v3.ipynb`
+
+- D2NN主体尽量保留 `D2NN-single-layer-CIFAR10(FO).ipynb` 写法（含 `class DNN`、两阶段训练流程）
+- 仅做必要改动：`num_layers=12` + detector改为共享 `SharedFCHead`
+- 保留 `MSELoss(reduction='sum')` 与“先训相位、再全部解禁微调”的思路
+- 修复中文显示和曲线数据使用旧变量的问题
