@@ -101,6 +101,7 @@ main()
 
 新增：`ViT_D2NN_CIFAR10_Compare_v3.ipynb`
 
+- 对齐原始流程增加 `best.pt` checkpoint 保存/加载（第一阶段最优参数用于第二阶段起点）
 - D2NN主体尽量保留 `D2NN-single-layer-CIFAR10(FO).ipynb` 写法（含 `class DNN`、两阶段训练流程）
 - 仅做必要改动：`num_layers=12` + detector改为共享 `SharedFCHead`
 - 保留 `MSELoss(reduction='sum')` 与“先训相位、再全部解禁微调”的思路
