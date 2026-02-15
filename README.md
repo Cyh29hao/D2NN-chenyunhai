@@ -41,3 +41,23 @@ The accuracy of D2NN model is troubling me for a long time. It seems difficult t
 By using 4F system D2NN, I've got **97%** Accuracy for **MNIST** validation dataset.
 
 Now, I'm trying to apply D2NN on **CIFAR-10** dataset with multichannel explorations. ***God Blessing Me !***
+
+## CIFAR-10: ViT-Base vs D2NN-12 (same FC head)
+
+新增脚本：`scripts/compare_vit_d2nn_cifar10.py`。
+
+两个模型都使用同一个全连接分类头结构（`Linear -> ReLU -> Dropout -> Linear`），便于公平对比：
+
+- `ViT-Base + Shared FC`
+- `D2NN 12层衍射 + Shared FC`
+
+运行方式：
+
+```bash
+python scripts/compare_vit_d2nn_cifar10.py \
+  --epochs 5 \
+  --batch-size 64 \
+  --lr 1e-4
+```
+
+结果会写入：`results/cifar10_vit_vs_d2nn.json`。
