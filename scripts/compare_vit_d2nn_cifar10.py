@@ -6,11 +6,13 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, Tuple
 
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from torchvision.models import vit_b_16
+from tqdm.auto import tqdm
 
 
 @dataclass
@@ -63,17 +65,32 @@ class D2NN12WithSharedHead(nn.Module):
     12-layer diffractive stack + same FC classifier design as ViT baseline.
     """
 
-    def __init__(self, img_size: int = 32, channels: int = 3, num_classes: int = 10, fc_hidden_dim: int = 512):
+    def __init__(self, img_size: int = 224, channels: int = 3, num_classes: int = 10, fc_hidden_dim: int = 512):
         super().__init__()
         self.layers = nn.ModuleList(
             [DiffractiveLayer(channels, img_size, img_size) for _ in range(12)]
         )
+
+        # 参考仓库中的角谱传播写法：使用固定传播核，而非恒等传播
+        wl = 532e-9
+        pixel_size = 8e-6
+        distance = 0.01
+        fx = np.fft.fftshift(np.fft.fftfreq(img_size, d=pixel_size))
+        fy = np.fft.fftshift(np.fft.fftfreq(img_size, d=pixel_size))
+        fxx, fyy = np.meshgrid(fx, fy)
+        inside = (1.0 / wl) ** 2 - fxx ** 2 - fyy ** 2
+        inside[inside < 0] = 0
+        kz = 2 * np.pi * np.sqrt(inside)
+        h = np.exp(1j * kz * distance).astype(np.complex64)
+        self.register_buffer("transfer", torch.from_numpy(h))
+
         self.pool = nn.AdaptiveAvgPool2d((8, 8))
         self.fc_head = SharedFCHead(channels * 8 * 8, hidden_dim=fc_hidden_dim, num_classes=num_classes)
 
-    @staticmethod
-    def propagate(field: torch.Tensor) -> torch.Tensor:
-        return torch.fft.ifft2(torch.fft.fft2(field))
+    def propagate(self, field: torch.Tensor) -> torch.Tensor:
+        spec = torch.fft.fftshift(torch.fft.fft2(field), dim=(-2, -1))
+        out_spec = spec * self.transfer
+        return torch.fft.ifft2(torch.fft.ifftshift(out_spec, dim=(-2, -1)))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         field = x.to(torch.complex64)
@@ -140,7 +157,7 @@ def train_model(model: nn.Module, train_loader: DataLoader, val_loader: DataLoad
         running = 0.0
         samples = 0
 
-        for x, y in train_loader:
+        for x, y in tqdm(train_loader, desc=f"{model.__class__.__name__} epoch {epoch+1}/{epochs}"):
             x = x.to(device)
             y = y.to(device)
 
@@ -167,10 +184,94 @@ def train_model(model: nn.Module, train_loader: DataLoader, val_loader: DataLoad
     )
 
 
+def select_phase_only_params(model: nn.Module):
+    for p in model.parameters():
+        p.requires_grad = False
+    params_to_update = []
+    for name, p in model.named_parameters():
+        if "phase" in name:
+            p.requires_grad = True
+            params_to_update.append(p)
+    return params_to_update
+
+
+def unfreeze_all_params(model: nn.Module):
+    for p in model.parameters():
+        p.requires_grad = True
+    return [p for p in model.parameters() if p.requires_grad]
+
+
+def train_d2nn_two_stage(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader, device: torch.device,
+                         phase_epochs: int = 8, finetune_epochs: int = 12,
+                         phase_lr: float = 2e-3, finetune_lr: float = 2e-4) -> RunMetrics:
+    model.to(device)
+    criterion = nn.CrossEntropyLoss()
+    best_acc = 0.0
+    last_acc = 0.0
+    last_loss = math.nan
+
+    print("\n[Stage-1] 只训练相位层（锁定其余参数）")
+    phase_params = select_phase_only_params(model)
+    optimizer = torch.optim.Adam(phase_params, lr=phase_lr)
+    for epoch in range(phase_epochs):
+        model.train()
+        running = 0.0
+        samples = 0
+        for x, y in tqdm(train_loader, desc=f"D2NN phase-only {epoch+1}/{phase_epochs}"):
+            x = x.to(device)
+            y = y.to(device)
+            optimizer.zero_grad(set_to_none=True)
+            logits = model(x)
+            loss = criterion(logits, y)
+            loss.backward()
+            optimizer.step()
+            running += loss.item() * y.size(0)
+            samples += y.size(0)
+        last_loss = running / max(samples, 1)
+        last_acc = evaluate(model, val_loader, device)
+        best_acc = max(best_acc, last_acc)
+        print(f"[Stage-1][epoch={epoch+1}] train_loss={last_loss:.4f} val_acc={last_acc*100:.2f}%")
+
+    print("\n[Stage-2] 解锁全参数联合微调")
+    all_params = unfreeze_all_params(model)
+    optimizer = torch.optim.AdamW(all_params, lr=finetune_lr, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(finetune_epochs, 1))
+    for epoch in range(finetune_epochs):
+        model.train()
+        running = 0.0
+        samples = 0
+        for x, y in tqdm(train_loader, desc=f"D2NN finetune {epoch+1}/{finetune_epochs}"):
+            x = x.to(device)
+            y = y.to(device)
+            optimizer.zero_grad(set_to_none=True)
+            logits = model(x)
+            loss = criterion(logits, y)
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            running += loss.item() * y.size(0)
+            samples += y.size(0)
+        scheduler.step()
+        last_loss = running / max(samples, 1)
+        last_acc = evaluate(model, val_loader, device)
+        best_acc = max(best_acc, last_acc)
+        print(f"[Stage-2][epoch={epoch+1}] train_loss={last_loss:.4f} val_acc={last_acc*100:.2f}%")
+
+    return RunMetrics(
+        model=model.__class__.__name__ + "_TwoStage",
+        epochs=phase_epochs + finetune_epochs,
+        best_val_acc=best_acc,
+        last_val_acc=last_acc,
+        train_loss=last_loss,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Compare ViT-Base and D2NN-12 on CIFAR-10 using same FC head.")
     parser.add_argument("--data-dir", type=Path, default=Path("./data"))
     parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--d2nn-phase-epochs", type=int, default=8)
+    parser.add_argument("--d2nn-finetune-epochs", type=int, default=12)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -200,7 +301,14 @@ def main() -> None:
 
     print("\n=== Train D2NN-12 + Shared FC ===")
     d2nn = D2NN12WithSharedHead(img_size=224, channels=3, num_classes=10, fc_hidden_dim=512)
-    d2nn_metrics = train_model(d2nn, train_loader, val_loader, device=device, epochs=args.epochs, lr=args.lr)
+    d2nn_metrics = train_d2nn_two_stage(
+        d2nn,
+        train_loader,
+        val_loader,
+        device=device,
+        phase_epochs=args.d2nn_phase_epochs,
+        finetune_epochs=args.d2nn_finetune_epochs,
+    )
 
     payload: Dict[str, Dict] = {
         "vit_base_shared_fc": asdict(vit_metrics),
